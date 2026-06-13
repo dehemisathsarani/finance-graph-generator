@@ -1,27 +1,13 @@
+import { useRef, useState } from "react";
 import logo from "./assets/learn-logo.jpeg";
+
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 const steps = [
   { title: "Upload File", detail: "Upload your Excel file", icon: "upload" },
   { title: "Select Graph", detail: "Choose a graph title", icon: "clipboard" },
   { title: "Generate", detail: "Generate your graph", icon: "chart" },
   { title: "Download", detail: "Download PNG / PDF", icon: "download" },
-];
-
-const bars = [
-  { label: "University of Peradeniya", value: 13.03, color: "bg-[#071978]", group: "Before 22" },
-  { label: "University of Colombo", value: 8.37, color: "bg-[#071978]", group: "Before 22" },
-  { label: "University of Kelaniya", value: 4.52, color: "bg-[#071978]", group: "Before 22" },
-  { label: "University of Moratuwa", value: 0.04, color: "bg-[#071978]", group: "Before 22" },
-  { label: "Rajarata", value: 4.68, color: "bg-[#071978]", group: "22-Jun" },
-  { label: "Ruhuna", value: 16.34, color: "bg-[#071978]", group: "22-Jun" },
-  { label: "Eastern University", value: 8.19, color: "bg-[#ef3f66]", group: "23-Nov" },
-  { label: "UOC", value: 1.09, color: "bg-[#ef3f66]", group: "23-Nov" },
-  { label: "ITUM", value: 4.83, color: "bg-[#7a43d3]", group: "24-May" },
-  { label: "South Eastern University", value: 3.27, color: "bg-[#7a43d3]", group: "24-Jul" },
-  { label: "University of Jaffna", value: 11.09, color: "bg-[#f7941d]", group: "26-Jun" },
-  { label: "Open University", value: 6.11, color: "bg-[#f7941d]", group: "26-Jun" },
-  { label: "Sabaragamuwa", value: 2.67, color: "bg-[#f7941d]", group: "26-Feb" },
-  { label: "Uva Wellassa", value: 1.48, color: "bg-[#f7941d]", group: "26-Feb" },
 ];
 
 const Icon = ({ name, className = "h-6 w-6" }) => {
@@ -135,7 +121,195 @@ const Icon = ({ name, className = "h-6 w-6" }) => {
   return <svg {...common}>{paths[name]}</svg>;
 };
 
+function formatBytes(bytes) {
+  if (!bytes) {
+    return "";
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function readApiError(response) {
+  try {
+    const body = await response.json();
+    return body.detail || "Something went wrong.";
+  } catch {
+    return "Something went wrong.";
+  }
+}
+
 function App() {
+  const fileInputRef = useRef(null);
+  const [uploadInfo, setUploadInfo] = useState(null);
+  const [selectedTitle, setSelectedTitle] = useState("");
+  const [selectedSheet, setSelectedSheet] = useState("");
+  const [graphResult, setGraphResult] = useState(null);
+  const [allGraphsUrl, setAllGraphsUrl] = useState("");
+  const [status, setStatus] = useState("Waiting for Excel file");
+  const [error, setError] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+
+  const canGenerate = uploadInfo && selectedTitle && !isGenerating;
+  const previewUrl = graphResult?.pngUrl ? `${API_BASE}${graphResult.pngUrl}` : "";
+
+  const uploadFile = async (file) => {
+    if (!file) {
+      return;
+    }
+
+    // Validate file type
+    const validExtensions = [".xlsx", ".xls"];
+    const fileExtension = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+    if (!validExtensions.includes(fileExtension)) {
+      setError(`Invalid file type. Please upload an Excel file (.xlsx or .xls). Got: ${fileExtension}`);
+      setStatus("Upload failed");
+      return;
+    }
+
+    // Validate file size (50MB limit)
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      setError(`File is too large. Maximum size is ${maxSize / 1024 / 1024}MB. Got: ${formatBytes(file.size)}`);
+      setStatus("Upload failed");
+      return;
+    }
+
+    if (file.size === 0) {
+      setError("File is empty. Please select a valid Excel file.");
+      setStatus("Upload failed");
+      return;
+    }
+
+    setError("");
+    setStatus("Uploading file");
+    setIsUploading(true);
+    setGraphResult(null);
+    setAllGraphsUrl("");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorMsg = await readApiError(response);
+        throw new Error(errorMsg);
+      }
+
+      const data = await response.json();
+      setUploadInfo({
+        ...data,
+        localName: file.name,
+        localSize: file.size,
+      });
+      setSelectedTitle(data.titles[0]?.title || "");
+      setSelectedSheet(data.titles[0]?.sheet || "");
+      setStatus("File ready");
+    } catch (err) {
+      setUploadInfo(null);
+      setSelectedTitle("");
+      setSelectedSheet("");
+      setStatus("Upload failed");
+      setError(err.message || "Failed to upload file");
+      console.error("Upload error:", err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const generateGraph = async () => {
+    if (!canGenerate) {
+      return;
+    }
+
+    setError("");
+    setStatus("Generating graph");
+    setIsGenerating(true);
+    setGraphResult(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_id: uploadInfo.fileId,
+          title: selectedTitle,
+          sheet: selectedSheet,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorMsg = await readApiError(response);
+        throw new Error(errorMsg);
+      }
+
+      const data = await response.json();
+      setGraphResult(data);
+      setStatus("Graph ready");
+    } catch (err) {
+      setStatus("Generation failed");
+      setError(err.message || "Failed to generate graph");
+      console.error("Generation error:", err);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const generateAllGraphs = async () => {
+    if (!uploadInfo || isGeneratingAll) {
+      return;
+    }
+
+    setError("");
+    setStatus("Generating all graphs");
+    setIsGeneratingAll(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/generate-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: uploadInfo.fileId }),
+      });
+
+      if (!response.ok) {
+        const errorMsg = await readApiError(response);
+        throw new Error(errorMsg);
+      }
+
+      const data = await response.json();
+      setAllGraphsUrl(`${API_BASE}${data.zipUrl}`);
+      setStatus(`${data.count} graphs ready`);
+    } catch (err) {
+      setStatus("Generate all failed");
+      setError(err.message || "Failed to generate all graphs");
+      console.error("Batch generation error:", err);
+    } finally {
+      setIsGeneratingAll(false);
+    }
+  };
+
+  const clearAll = () => {
+    setUploadInfo(null);
+    setSelectedTitle("");
+    setSelectedSheet("");
+    setGraphResult(null);
+    setAllGraphsUrl("");
+    setStatus("Waiting for Excel file");
+    setError("");
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const uploadLabel = isUploading ? "Uploading..." : "Click to upload or drag and drop";
+
   return (
     <main className="min-h-screen bg-[#eef8ff] text-[#080a59]">
       <header className="fixed left-0 right-0 top-0 z-30 flex h-[92px] items-center border-b border-[#cfe0ef] bg-white/90 px-6 shadow-[0_10px_35px_rgba(7,25,120,0.06)] backdrop-blur">
@@ -154,7 +328,7 @@ function App() {
           <button className="flex items-center gap-3 rounded-md px-3 py-2 font-bold text-[#080a59]">
             <Icon name="users" className="h-6 w-6 text-[#5614ff]" />
             <span className="hidden sm:inline">Finance Team</span>
-            <span className="text-lg leading-none">⌄</span>
+            <span className="text-lg leading-none">v</span>
           </button>
         </div>
       </header>
@@ -184,7 +358,7 @@ function App() {
         </div>
 
         <footer className="absolute bottom-6 left-4 right-4 text-sm font-medium leading-8">
-          <p>© 2026 Finance Graph Generator</p>
+          <p>(c) 2026 Finance Graph Generator</p>
           <p>All rights reserved.</p>
         </footer>
       </aside>
@@ -209,7 +383,9 @@ function App() {
                   <Icon name={step.icon} className="h-8 w-8" />
                 </div>
                 <div>
-                  <p className="font-black">{index + 1}. {step.title}</p>
+                  <p className="font-black">
+                    {index + 1}. {step.title}
+                  </p>
                   <p className="mt-2 font-medium text-[#111368]">{step.detail}</p>
                 </div>
               </article>
@@ -219,45 +395,107 @@ function App() {
           <div className="grid gap-5 xl:grid-cols-[365px_minmax(0,1fr)]">
             <section className="rounded-lg border border-[#cfdeef] bg-white/82 p-5 shadow-[0_18px_45px_rgba(7,25,120,0.08)]">
               <h3 className="mb-5 text-lg font-black">1. Upload Excel File</h3>
-              <button className="grid min-h-[150px] w-full place-items-center rounded-lg border border-dashed border-[#681cff] bg-white/60 p-5 text-center transition hover:bg-[#f7f3ff]">
+              <input
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(event) => uploadFile(event.target.files?.[0])}
+                ref={fileInputRef}
+                type="file"
+              />
+              <button
+                className="grid min-h-[150px] w-full place-items-center rounded-lg border border-dashed border-[#681cff] bg-white/60 p-5 text-center transition hover:bg-[#f7f3ff] disabled:cursor-not-allowed disabled:opacity-70"
+                disabled={isUploading}
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  uploadFile(event.dataTransfer.files?.[0]);
+                }}
+              >
                 <span className="grid place-items-center gap-3">
                   <Icon name="upload" className="h-12 w-12 text-[#6412e8]" />
-                  <span className="font-black">Click to upload or drag and drop</span>
+                  <span className="font-black">{uploadLabel}</span>
                   <span className="text-sm font-medium text-[#111368]">Excel files only (.xlsx, .xls)</span>
                 </span>
               </button>
 
-              <div className="mt-4 flex items-center gap-4 rounded-lg border border-[#cfdeef] bg-white p-4 shadow-sm">
-                <div className="grid h-12 w-10 place-items-center rounded bg-[#1f9d55] text-xl font-black text-white">X</div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-black">Outstanding_Report_May2026.xlsx</p>
-                  <p className="mt-2 text-sm font-medium text-[#111368]">2.45 MB</p>
+              {uploadInfo ? (
+                <div className="mt-4 flex items-center gap-4 rounded-lg border border-[#cfdeef] bg-white p-4 shadow-sm">
+                  <div className="grid h-12 w-10 place-items-center rounded bg-[#1f9d55] text-xl font-black text-white">
+                    X
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-black">
+                      {uploadInfo.filename || uploadInfo.localName}
+                    </p>
+                    <p className="mt-2 text-sm font-medium text-[#111368]">
+                      {formatBytes(uploadInfo.size || uploadInfo.localSize)}
+                    </p>
+                  </div>
+                  <span className="grid h-5 w-5 place-items-center rounded-full bg-[#13a348] text-white">
+                    <Icon name="check" className="h-3.5 w-3.5" />
+                  </span>
                 </div>
-                <span className="grid h-5 w-5 place-items-center rounded-full bg-[#13a348] text-white">
-                  <Icon name="check" className="h-3.5 w-3.5" />
-                </span>
-              </div>
+              ) : (
+                <div className="mt-4 rounded-lg border border-[#cfdeef] bg-white/70 p-4 text-sm font-bold text-[#111368]">
+                  No file uploaded yet.
+                </div>
+              )}
 
               <h3 className="mb-3 mt-7 text-lg font-black">2. Select Graph Title</h3>
-              <p className="mb-3 text-sm font-medium text-[#111368]">Found 5 graph titles in this file</p>
-              <button className="flex w-full items-center justify-between rounded-lg border border-[#cfdeef] bg-white p-4 text-left text-sm font-black shadow-sm">
-                Outstanding as of 31st May 2026
-                <span className="text-lg">⌄</span>
-              </button>
+              <p className="mb-3 text-sm font-medium text-[#111368]">
+                {uploadInfo ? `Found ${uploadInfo.titles.length} graph titles in this file` : "Upload a file to load graph titles"}
+              </p>
+              <select
+                className="min-h-12 w-full rounded-lg border border-[#cfdeef] bg-white p-4 text-sm font-black shadow-sm disabled:cursor-not-allowed disabled:opacity-70"
+                disabled={!uploadInfo}
+                onChange={(event) => {
+                  const item = uploadInfo?.titles[Number(event.target.value)];
+                  setSelectedTitle(item?.title || "");
+                  setSelectedSheet(item?.sheet || "");
+                  setGraphResult(null);
+                }}
+                value={Math.max(
+                  uploadInfo?.titles.findIndex(
+                    (item) => item.title === selectedTitle && item.sheet === selectedSheet,
+                  ) ?? -1,
+                  0,
+                )}
+              >
+                {!uploadInfo ? <option>Select a title after upload</option> : null}
+                {uploadInfo?.titles.map((item, index) => (
+                  <option key={`${item.sheet}-${item.row}-${item.title}`} value={index}>
+                    {item.title}
+                    {item.sheet ? ` (${item.sheet})` : ""}
+                  </option>
+                ))}
+              </select>
 
-              <div className="mt-5 rounded-lg border border-[#d7d7ff] bg-[#f2f0ff] p-4 text-sm text-[#111368]">
-                <p className="font-black">Selected file is ready for preview.</p>
-                <p className="mt-2 text-xs font-medium">Generate one graph or export all available graph titles.</p>
+              <div className={`mt-5 rounded-lg border p-4 text-sm ${error ? "border-[#ffb6bd] bg-[#fff5f6] text-[#b00020]" : "border-[#d7d7ff] bg-[#f2f0ff] text-[#111368]"}`}>
+                <p className="font-black">{error || status}</p>
+                <p className="mt-2 text-xs font-medium">
+                  {uploadInfo
+                    ? "Generate one selected graph or create a ZIP file with every graph title."
+                    : "The Excel workbook must contain a sheet named Graph."}
+                </p>
               </div>
 
               <div className="mt-5 grid grid-cols-2 gap-3">
-                <button className="flex min-h-12 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#0875d8] to-[#0748b4] px-4 font-black text-white shadow-lg shadow-blue-900/20">
+                <button
+                  className="flex min-h-12 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-[#0875d8] to-[#0748b4] px-4 font-black text-white shadow-lg shadow-blue-900/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!canGenerate}
+                  onClick={generateGraph}
+                >
                   <Icon name="download" className="h-5 w-5 rotate-180" />
-                  Generate Graph
+                  {isGenerating ? "Generating..." : "Generate Graph"}
                 </button>
-                <button className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-[#9b78ff] bg-white px-4 font-black text-[#4c13e8] shadow-sm">
+                <button
+                  className="flex min-h-12 items-center justify-center gap-2 rounded-lg border border-[#9b78ff] bg-white px-4 font-black text-[#4c13e8] shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!uploadInfo || isGeneratingAll}
+                  onClick={generateAllGraphs}
+                >
                   <Icon name="grid" className="h-5 w-5" />
-                  Generate All
+                  {isGeneratingAll ? "Generating..." : "Generate All"}
                 </button>
               </div>
             </section>
@@ -267,67 +505,68 @@ function App() {
                 <h3 className="mr-auto text-lg font-black">Graph Preview</h3>
                 <span className="flex items-center gap-2 rounded-full bg-[#e5f8ea] px-4 py-2 text-sm font-black text-[#0d7a33]">
                   <Icon name="check" className="h-4 w-4" />
-                  Ready
+                  {status}
                 </span>
-                <button className="flex items-center gap-2 rounded-lg border border-[#d7e1ee] bg-white px-4 py-2 text-sm font-black shadow-sm">
+                <button
+                  className="flex items-center gap-2 rounded-lg border border-[#d7e1ee] bg-white px-4 py-2 text-sm font-black shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!previewUrl}
+                  onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
+                >
                   <Icon name="expand" className="h-5 w-5" />
                   Fullscreen
                 </button>
               </div>
 
-              <div className="overflow-hidden rounded-lg border border-[#cfdeef] bg-white p-4">
-                <h4 className="mb-4 text-center text-lg font-black">Outstanding as of 10 April 2026</h4>
-                <div className="overflow-x-auto pb-2">
-                  <div className="relative min-w-[850px]">
-                    <div className="absolute bottom-[112px] left-[52px] right-0 top-0 grid grid-rows-5">
-                      {Array.from({ length: 5 }).map((_, index) => (
-                        <div className="border-t border-[#e5edf5]" key={index} />
-                      ))}
+              <div className="grid min-h-[520px] place-items-center overflow-hidden rounded-lg border border-[#cfdeef] bg-white p-4">
+                {previewUrl ? (
+                  <img
+                    alt={graphResult.title}
+                    className="max-h-[720px] w-full rounded-md object-contain"
+                    src={previewUrl}
+                  />
+                ) : (
+                  <div className="grid place-items-center gap-4 text-center">
+                    <div className="grid h-20 w-20 place-items-center rounded-lg bg-[#eef3ff] text-[#5614ff]">
+                      <Icon name="chart" className="h-10 w-10" />
                     </div>
-                    <div className="flex h-[430px] items-end gap-4 pl-12 pr-4">
-                      {bars.map((bar) => (
-                        <div className="relative flex h-full w-12 shrink-0 flex-col items-center justify-end" key={`${bar.label}-${bar.group}`}>
-                          <span className="mb-2 text-xs font-black">{bar.value.toFixed(2)}</span>
-                          <div
-                            className={`${bar.color} w-5 rounded-t-md shadow-md`}
-                            style={{ height: `${Math.max((bar.value / 18) * 260, 5)}px` }}
-                          />
-                          <div className="mt-3 h-24 w-full border-l border-[#d5e0ee] pt-2">
-                            <p className="origin-top-left rotate-[-90deg] whitespace-nowrap text-[10px] font-black leading-none">
-                              {bar.label}
-                            </p>
-                          </div>
-                          <p className="mt-2 whitespace-nowrap text-xs font-black">{bar.group}</p>
-                        </div>
-                      ))}
+                    <div>
+                      <h4 className="text-xl font-black">No graph generated yet</h4>
+                      <p className="mt-2 max-w-md text-sm font-medium text-[#111368]">
+                        Upload the Excel file, select a graph title, then click Generate Graph.
+                      </p>
                     </div>
-                    <div className="absolute bottom-[112px] left-0 top-0 flex w-10 flex-col justify-between text-right text-[10px] font-black text-[#111368]">
-                      {[20, 16, 12, 8, 4, 0].map((tick) => (
-                        <span key={tick}>{tick}</span>
-                      ))}
-                    </div>
-                    <p className="absolute left-0 top-40 origin-left rotate-[-90deg] text-[10px] font-black">
-                      Millions
-                    </p>
                   </div>
-                </div>
-                <div className="mt-2 h-3 rounded-full bg-[#e6edf5]">
-                  <div className="h-3 w-1/2 rounded-full bg-[#c7d2df]" />
-                </div>
+                )}
               </div>
             </section>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-5">
-            <button className="mx-auto flex min-h-12 min-w-[190px] items-center justify-center gap-3 rounded-lg border border-[#426bff] bg-white px-6 font-black text-[#0b28ff] shadow-sm">
+            <a
+              className={`mx-auto flex min-h-12 min-w-[190px] items-center justify-center gap-3 rounded-lg border border-[#426bff] bg-white px-6 font-black text-[#0b28ff] shadow-sm ${graphResult ? "" : "pointer-events-none opacity-50"}`}
+              href={graphResult ? `${API_BASE}${graphResult.pngUrl}` : "#"}
+            >
               <Icon name="file" className="h-5 w-5" />
               Download PNG
-            </button>
-            <button className="mx-auto flex min-h-12 min-w-[190px] items-center justify-center gap-3 rounded-lg border border-[#a47aff] bg-white px-6 font-black text-[#4d13ff] shadow-sm xl:mx-0">
+            </a>
+            <a
+              className={`mx-auto flex min-h-12 min-w-[190px] items-center justify-center gap-3 rounded-lg border border-[#a47aff] bg-white px-6 font-black text-[#4d13ff] shadow-sm xl:mx-0 ${graphResult ? "" : "pointer-events-none opacity-50"}`}
+              href={graphResult ? `${API_BASE}${graphResult.pdfUrl}` : "#"}
+            >
               <Icon name="file" className="h-5 w-5 text-[#ff174b]" />
               Download PDF
-            </button>
-            <button className="ml-auto flex min-h-12 min-w-[160px] items-center justify-center gap-3 rounded-lg border border-[#ffb6bd] bg-white px-6 font-black text-[#ff1c25] shadow-sm">
+            </a>
+            <a
+              className={`flex min-h-12 min-w-[190px] items-center justify-center gap-3 rounded-lg border border-[#13a348] bg-white px-6 font-black text-[#0d7a33] shadow-sm ${allGraphsUrl ? "" : "pointer-events-none opacity-50"}`}
+              href={allGraphsUrl || "#"}
+            >
+              <Icon name="download" className="h-5 w-5" />
+              Download All
+            </a>
+            <button
+              className="ml-auto flex min-h-12 min-w-[160px] items-center justify-center gap-3 rounded-lg border border-[#ffb6bd] bg-white px-6 font-black text-[#ff1c25] shadow-sm"
+              onClick={clearAll}
+            >
               <Icon name="trash" className="h-5 w-5" />
               Clear
             </button>
